@@ -14,14 +14,16 @@ static volatile uint8_t sensing_count = 0;
 static volatile uint8_t sensing_index = 0;
 static volatile bool sensing_initialized = false;
 static volatile bool sensing_skip_first = true;
+static volatile uint32_t sensing_isr_count = 0;
 
 static void sensingSetMux(uint8_t index) {
   while (ADC0->SYNCBUSY.bit.INPUTCTRL);
   ADC0->INPUTCTRL.bit.MUXPOS = g_APinDescription[sensing_pins[index]].ulADCChannelNumber;
 }
 
-extern "C" void ADC0_0_Handler(void) {
+void _serviceSAMD51Sensing() {
   if (!ADC0->INTFLAG.bit.RESRDY) return;
+  sensing_isr_count++;
   uint16_t result = ADC0->RESULT.reg;
   ADC0->INTFLAG.reg = ADC_INTFLAG_RESRDY;
 
@@ -36,6 +38,10 @@ extern "C" void ADC0_0_Handler(void) {
   sensing_index++;
   if (sensing_index >= sensing_count) sensing_index = 0;
   sensingSetMux(sensing_index);
+}
+
+extern "C" void ADC0_0_Handler(void) {
+  _serviceSAMD51Sensing();
 }
 
 void* _configureADCLowSide(const void* driver_params, const int pinA, const int pinB, const int pinC) {
@@ -60,10 +66,19 @@ void* _configureADCLowSide(const void* driver_params, const int pinA, const int 
     .pins = { pinA, pinB, pinC },
     .adc_voltage_conv = _SAMD51_ADC_VOLTAGE / _SAMD51_ADC_RESOLUTION,
   };
+  Serial.print("SAMD51-CUR config pins ");
+  Serial.print(pinA); Serial.print(",");
+  Serial.print(pinB); Serial.print(",");
+  Serial.print(pinC);
+  Serial.print(" channels ");
+  Serial.print(g_APinDescription[pinA].ulADCChannelNumber); Serial.print(",");
+  Serial.print(g_APinDescription[pinB].ulADCChannelNumber); Serial.print(",");
+  Serial.println(g_APinDescription[pinC].ulADCChannelNumber);
   return params;
 }
 
 float _readADCVoltageLowSide(const int pin, const void* cs_params) {
+  _serviceSAMD51Sensing();
   float countsToVolts = ((GenericCurrentSenseParams*)cs_params)->adc_voltage_conv;
   for (uint8_t i = 0; i < 3; i++) {
     if (sensing_pins[i] == pin) return sensing_raw[i] * countsToVolts;
@@ -81,9 +96,18 @@ void _configureSAMD51VoltageSense(int pinA, int pinB, int pinC) {
     sensing_pins[3 + i] = pins[i];
   }
   sensing_count = 6;
+  Serial.print("SAMD51-V config pins ");
+  Serial.print(pinA); Serial.print(",");
+  Serial.print(pinB); Serial.print(",");
+  Serial.print(pinC);
+  Serial.print(" channels ");
+  Serial.print(g_APinDescription[pinA].ulADCChannelNumber); Serial.print(",");
+  Serial.print(g_APinDescription[pinB].ulADCChannelNumber); Serial.print(",");
+  Serial.println(g_APinDescription[pinC].ulADCChannelNumber);
 }
 
 float _readSAMD51VoltageSense(const int pin) {
+  _serviceSAMD51Sensing();
   for (uint8_t i = 3; i < 6; i++) {
     if (sensing_pins[i] == pin) return sensing_raw[i] * (_SAMD51_ADC_VOLTAGE / _SAMD51_ADC_RESOLUTION);
   }
@@ -152,7 +176,35 @@ void* _driverSyncLowSide(void* driver_params, void* cs_params) {
   NVIC_EnableIRQ(ADC0_0_IRQn);
 
   sensing_initialized = true;
+  Serial.print("SAMD51-SYNC tcc=");
+  Serial.print(tcc_num);
+  Serial.print(" par=");
+  Serial.print((uint32_t)par, HEX);
+  Serial.print(" tccen=");
+  Serial.print(tcc->CTRLA.bit.ENABLE);
+  Serial.print(" tccper=");
+  Serial.print(tcc->PER.reg);
+  Serial.print(" tccev=");
+  Serial.print(tcc->EVCTRL.reg, HEX);
+  Serial.print(" adcen=");
+  Serial.print(ADC0->CTRLA.bit.ENABLE);
+  Serial.print(" adcev=");
+  Serial.print(ADC0->EVCTRL.reg, HEX);
+  Serial.print(" adcint=");
+  Serial.print(ADC0->INTENSET.reg, HEX);
+  Serial.print(" evch=");
+  Serial.print(EVSYS->Channel[0].CHANNEL.reg, HEX);
+  Serial.print(" evuser=");
+  Serial.print(EVSYS->USER[EVSYS_ID_USER_ADC0_START].reg, HEX);
+  Serial.print(" nvic=");
+  Serial.print(NVIC_GetEnableIRQ(ADC0_0_IRQn));
+  Serial.print(" count=");
+  Serial.println(sensing_count);
   return cs_params;
+}
+
+uint32_t _getSAMD51SensingIsrCount() {
+  return sensing_isr_count;
 }
 
 #endif
