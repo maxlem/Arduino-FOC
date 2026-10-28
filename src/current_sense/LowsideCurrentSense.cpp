@@ -90,6 +90,6 @@ PhaseCurrent_s LowsideCurrentSense::getPhaseCurrents(){
     _startADC3PinConversionLowSide();
     current.a = (!_isset(pinA)) ? 0 : (_readADCVoltageLowSide(pinA, params) - offset_ia)*gain_a;// amps
     current.b = (!_isset(pinB)) ? 0 : (_readADCVoltageLowSide(pinB, params) - offset_ib)*gain_b;// amps
-    current.c = (!_isset(pinC)) ? 0 : (_readADCVoltageLowSide(pinC, params) - offset_ic)*gain_c; // amps
+    current.c = (!_isset(pinC)) ? -(current.a + current.b) : (_readADCVoltageLowSide(pinC, params) - offset_ic)*gain_c; // amps
     return current;
 }
