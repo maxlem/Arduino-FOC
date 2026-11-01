@@ -16,9 +16,13 @@
 #define SENSING_PIN_VC 5
 #define SENSING_PIN_VM 6
 #define SENSING_PIN_COUNT 7
+#define SENSING_HISTORY_SIZE 5
 
 static int sensing_pins[SENSING_PIN_COUNT] = { _NC, _NC, _NC, _NC, _NC, _NC, _NC };
 static volatile uint16_t sensing_raw[SENSING_PIN_COUNT] = { 0, 0, 0, 0, 0, 0, 0 };
+static volatile uint16_t sensing_history[SENSING_PIN_COUNT][SENSING_HISTORY_SIZE] = {};
+static volatile uint8_t sensing_history_index[SENSING_PIN_COUNT] = { 0, 0, 0, 0, 0, 0, 0 };
+static volatile uint8_t sensing_history_count[SENSING_PIN_COUNT] = { 0, 0, 0, 0, 0, 0, 0 };
 static volatile float sensing_filtered[SENSING_PIN_COUNT] = { 0, 0, 0, 0, 0, 0, 0 };
 static volatile uint64_t sensing_timestamp_us[SENSING_PIN_COUNT] = { 0, 0, 0, 0, 0, 0, 0 };
 static volatile uint8_t sensing_count = 0;
@@ -41,6 +45,23 @@ static uint64_t sensingNowUs() {
   sensing_micros64 += (uint32_t)(now - sensing_last_micros);
   sensing_last_micros = now;
   return sensing_micros64;
+}
+
+static uint16_t sensingMedianLast(const volatile uint16_t* history, uint8_t next_index, uint8_t count) {
+  uint16_t values[SENSING_HISTORY_SIZE];
+  for (uint8_t i = 0; i < count; i++) {
+    values[i] = history[(next_index + SENSING_HISTORY_SIZE - count + i) % SENSING_HISTORY_SIZE];
+  }
+  for (uint8_t i = 1; i < count; i++) {
+    uint16_t value = values[i];
+    uint8_t j = i;
+    while (j > 0 && values[j - 1] > value) {
+      values[j] = values[j - 1];
+      j--;
+    }
+    values[j] = value;
+  }
+  return values[count / 2];
 }
 
 static uint8_t sensingADC1Channel(int pin) {
@@ -72,10 +93,27 @@ static void sensingServiceADC(Adc* adc, const uint8_t* pin_map, uint8_t pin_coun
   if (*index >= pin_count) *index = 0;
   uint8_t pin_index = pin_map[*index];
   sensing_raw[pin_index] = result;
+
+  uint16_t filtered_result = result;
+  if (!adc1) {
+    uint8_t next_index = sensing_history_index[pin_index];
+    sensing_history[pin_index][next_index] = result;
+    next_index = (next_index + 1) % SENSING_HISTORY_SIZE;
+    sensing_history_index[pin_index] = next_index;
+
+    uint8_t count = sensing_history_count[pin_index];
+    if (count < SENSING_HISTORY_SIZE) {
+      sensing_history_count[pin_index] = ++count;
+    }
+    uint8_t window = (pin_index == SENSING_PIN_VM) ? SENSING_HISTORY_SIZE : 3;
+    if (window > count) window = count;
+    filtered_result = sensingMedianLast(sensing_history[pin_index], next_index, window);
+  }
+
   if (sensing_timestamp_us[pin_index] == 0) {
-    sensing_filtered[pin_index] = result;
+    sensing_filtered[pin_index] = filtered_result;
   } else {
-    sensing_filtered[pin_index] += 0.02f * ((float)result - sensing_filtered[pin_index]);
+    sensing_filtered[pin_index] += 0.02f * ((float)filtered_result - sensing_filtered[pin_index]);
   }
   sensing_timestamp_us[pin_index] = sample_us;
   (*index)++;
@@ -162,7 +200,7 @@ float _readSAMD51VoltageSense(const int pin) {
 
 float _readSAMD51VMSense(const int pin) {
   _serviceSAMD51Sensing();
-  if (sensing_pins[SENSING_PIN_VM] == pin) return sensing_filtered[SENSING_PIN_VM] * (_SAMD51_ADC_VOLTAGE / _SAMD51_ADC_RESOLUTION) * _SAMD51_VSENSE_DIVIDER;
+  if (sensing_pins[SENSING_PIN_VM] == pin) return sensing_filtered[SENSING_PIN_VM] * (_SAMD51_ADC_VOLTAGE / _SAMD51_ADC_RESOLUTION);
   return 0.0f;
 }
 
@@ -252,6 +290,10 @@ void* _driverSyncLowSide(void* driver_params, void* cs_params) {
   sensing_adc1_index = 0;
   sensing_skip_first_adc0 = true;
   sensing_skip_first_adc1 = true;
+  for (uint8_t i = 0; i < SENSING_PIN_COUNT; i++) {
+    sensing_history_index[i] = 0;
+    sensing_history_count[i] = 0;
+  }
   ADC0->CTRLA.bit.ENABLE = 1;
   while (ADC0->SYNCBUSY.bit.ENABLE);
   ADC1->CTRLA.bit.ENABLE = 1;
