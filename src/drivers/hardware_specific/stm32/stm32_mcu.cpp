@@ -123,7 +123,12 @@ TIM_HandleTypeDef* stm32_useTimer(PinMap* timer) {
   #if defined(TIM_RCR_REP)
   handle->Init.RepetitionCounter = 1;
   #endif
+#if defined(__MBED__)
   enableTimerClock(handle);
+#else
+  // STM32duino exposes enableTimerClock(TIM_TypeDef*) from the core.
+  enableTimerClock(handle->Instance);
+#endif
   HAL_TIM_Base_Init(handle);
   stm32_pauseTimer(handle);
   timersUsed[numTimersUsed++] = handle;
